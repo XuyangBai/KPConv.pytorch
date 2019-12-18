@@ -1,0 +1,411 @@
+import open3d
+import numpy as np
+from utils.pointcloud import make_point_cloud
+from functools import partial
+import torch
+import cpp_wrappers.cpp_subsampling.grid_subsampling as cpp_subsampling
+from utils.timer import Timer
+
+
+def find_neighbors(query_points, support_points, radius, max_neighbor):
+    pcd = make_point_cloud(support_points)
+    kdtree = open3d.KDTreeFlann(pcd)
+    neighbor_indices_list = []
+    for i, point in enumerate(query_points):
+        [k, idx, dis] = kdtree.search_radius_vector_3d(point, radius)
+        if k > max_neighbor:
+            idx = np.random.choice(idx, max_neighbor, replace=False)
+        else:
+            # if not enough neighbor points, then add the dustbin point.
+            idx = list(idx) + [len(support_points)] * (max_neighbor - k)
+        neighbor_indices_list.append([idx])
+    neighbors = np.concatenate(neighbor_indices_list, axis=0)
+    return torch.from_numpy(neighbors)
+
+
+def batch_find_neighbors(query_points, support_points, query_batches, support_batches, radius, max_neighbors):
+    num_batches = len(query_batches)
+    # Create kdtree for each pcd
+    kdtrees = []
+    for i in range(num_batches):
+        pcd = make_point_cloud(support_points[i])
+        kdtrees.append(open3d.KDTreeFlann(pcd))
+    assert len(kdtrees) == num_batches
+    # Search neigbors indices
+    neighbors_indices_list = []
+    start_ind = 0
+    dustbin_ind = np.sum(support_batches)
+    for i_batch in range(num_batches):
+        for i_pts, pts in enumerate(query_points[i_batch]):
+            [k, idx, dis] = kdtrees[i_batch].search_radius_vector_3d(pts, radius)
+            if k > max_neighbors:
+                idx = np.random.choice(idx, max_neighbors, replace=False)
+            else:
+                # if not enough neighbor points, then add dustbin index. Careful !!!
+                idx = list(idx) + [dustbin_ind - start_ind] * (max_neighbors - k)
+            idx = np.array(idx) + start_ind
+            neighbors_indices_list.append(idx)
+        # finish one query_points, update the start_ind
+        start_ind += support_batches[i_batch]
+    return torch.from_numpy(np.array(neighbors_indices_list))
+
+
+def grid_subsampling(points, features=None, labels=None, sampleDl=0.1, verbose=0):
+    """
+    CPP wrapper for a grid subsampling (method = barycenter for points and features
+    :param points: (N, 3) matrix of input points
+    :param features: optional (N, d) matrix of features (floating number)
+    :param labels: optional (N,) matrix of integer labels
+    :param sampleDl: parameter defining the size of grid voxels
+    :param verbose: 1 to display
+    :return: subsampled points, with features and/or labels depending of the input
+    """
+
+    if (features is None) and (labels is None):
+        return cpp_subsampling.compute(points, sampleDl=sampleDl, verbose=verbose)
+    elif (labels is None):
+        return cpp_subsampling.compute(points, features=features, sampleDl=sampleDl, verbose=verbose)
+    elif (features is None):
+        return cpp_subsampling.compute(points, classes=labels, sampleDl=sampleDl, verbose=verbose)
+    else:
+        return cpp_subsampling.compute(points, features=features, classes=labels, sampleDl=sampleDl, verbose=verbose)
+
+
+def batch_grid_subsampling(points, batches_len, sampleDl=0.1):
+    """
+    CPP wrapper for a batch grid subsampling (method = barycenter for points and features
+    :param points: a list of (N, 3) matrix of input points
+    :param batches_len: lengths of batched input points
+    :param sampleDl: parameter defining the size of grid voxels
+    :return:
+    """
+    statcked_points = np.concatenate(points, axis=0)
+    subsampled_points_list = []
+    subsampled_batches_len_list = []
+    start_ind = 0
+    for length in batches_len:
+        b_origin_points = statcked_points[start_ind:start_ind + length]
+        b_subsampled_points = grid_subsampling(b_origin_points, sampleDl=sampleDl)
+        subsampled_points_list.append(b_subsampled_points)
+        subsampled_batches_len_list.append(len(b_subsampled_points))
+    return subsampled_points_list, subsampled_batches_len_list
+
+
+def collate_fn_segmentation(list_data, config, neighborhood_limits):
+    batched_points_list = []
+    batched_features_list = []
+    batched_labels_list = []
+    batched_lengths_list = []
+
+    for ind, (pts, features, labels) in enumerate(list_data):
+        batched_points_list.append(pts)
+        batched_features_list.append(features)
+        batched_labels_list.append(labels)
+        batched_lengths_list.append(len(pts))
+
+    input_features = np.concatenate(batched_features_list, axis=0)
+    input_labels = np.concatenate(batched_labels_list, axis=0)
+    # batched_points_list = np.concatenate(batched_points_list, axis=0)
+    # batched_features_list = np.concatenate(batched_features_list, axis=0)
+    # batched_labels_list = np.concatenate(batched_labels_list, axis=0)
+
+    # Starting radius of convolutions
+    r_normal = config.first_subsampling_dl * config.KP_extent * 2.5
+
+    # Starting layer
+    layer_blocks = []
+    layer = 0
+
+    # Lists of inputs
+    input_points = []
+    input_neighbors = []
+    input_pools = []
+    input_upsamples = []
+    input_batches_len = []
+
+    for block_i, block in enumerate(config.architecture):
+
+        # Stop when meeting a global pooling or upsampling
+        if 'global' in block or 'upsample' in block:
+            break
+
+        # Get all blocks of the layer
+        if not ('pool' in block or 'strided' in block):
+            layer_blocks += [block]
+            if block_i < len(config.architecture) - 1 and not ('upsample' in config.architecture[block_i + 1]):
+                continue
+
+        # Convolution neighbors indices
+        # *****************************
+
+        if layer_blocks:
+            # Convolutions are done in this layer, compute the neighbors with the good radius
+            if np.any(['deformable' in blck for blck in layer_blocks[:-1]]):
+                r = r_normal * config.density_parameter / (config.KP_extent * 2.5)
+            else:
+                r = r_normal
+            conv_i = batch_find_neighbors(batched_points_list, batched_points_list, batched_lengths_list, batched_lengths_list, r,
+                                          neighborhood_limits[layer])
+
+        else:
+            # This layer only perform pooling, no neighbors required
+            conv_i = torch.zeros((0, 1), dtype=torch.int32)
+
+        # Pooling neighbors indices
+        # *************************
+
+        # If end of layer is a pooling operation
+        if 'pool' in block or 'strided' in block:
+
+            # New subsampling length
+            dl = 2 * r_normal / (config.KP_extent * 2.5)
+
+            # Subsampled points
+            pool_p, pool_b = batch_grid_subsampling(batched_points_list, batched_lengths_list, sampleDl=dl)
+
+            # Radius of pooled neighbors
+            if 'deformable' in block:
+                r = r_normal * config.density_parameter / (config.KP_extent * 2.5)
+            else:
+                r = r_normal
+
+            # Subsample indices
+            pool_i = batch_find_neighbors(pool_p, batched_points_list, pool_b, batched_lengths_list, r, neighborhood_limits[layer])
+
+            # Upsample indices (with the radius of the next layer to keep wanted density)
+            up_i = batch_find_neighbors(batched_points_list, pool_p, batched_lengths_list, pool_b, 2 * r, neighborhood_limits[layer])
+
+        else:
+            # No pooling in the end of this layer, no pooling indices required
+            pool_i = torch.zeros((0, 1), dtype=torch.int32)
+            pool_p = torch.zeros((0, 3), dtype=torch.float32)
+            pool_b = torch.zeros((0,), dtype=torch.int32)
+            up_i = torch.zeros((0, 1), dtype=torch.int32)
+
+        # Updating input lists
+        input_points += [torch.from_numpy(np.concatenate(batched_points_list, axis=0)).float()]
+        input_neighbors += [conv_i]
+        input_pools += [pool_i]
+        input_upsamples += [up_i]
+        input_batches_len += [batched_lengths_list]
+
+        # New points for next layer
+        batched_points_list = pool_p
+        batched_lengths_list = pool_b
+
+        # Update radius and reset blocks
+        r_normal *= 2
+        layer += 1
+        layer_blocks = []
+
+    ###############
+    # Return inputs
+    ###############
+    dict_inputs = {
+        'points': input_points,
+        'neighbors': input_neighbors,
+        'pools': input_pools,
+        'upsamples': input_upsamples,
+        'features': torch.from_numpy(input_features).float(),
+        'labels': torch.from_numpy(input_labels),
+        'stack_lengths': torch.from_numpy(np.array(input_batches_len))
+    }
+
+    return dict_inputs
+
+
+def collate_fn_classification(list_data, config, neighborhood_limits):
+    # The difference with 'collate_fn_classification' is no need to save upsample indices && stop when meeting a global pooling (not including upsample)
+    batched_points_list = []
+    batched_features_list = []
+    batched_labels_list = []
+    batched_lengths_list = []
+
+    for ind, (pts, features, labels) in enumerate(list_data):
+        batched_points_list.append(pts)
+        batched_features_list.append(features)
+        batched_labels_list.append(labels)
+        batched_lengths_list.append(len(pts))
+
+    input_features = np.concatenate(batched_features_list, axis=0)
+    input_labels = np.array(batched_labels_list)
+    # batched_points_list = np.concatenate(batched_points_list, axis=0)
+    # batched_features_list = np.concatenate(batched_features_list, axis=0)
+    # batched_labels_list = np.concatenate(batched_labels_list, axis=0)
+
+    # Starting radius of convolutions
+    r_normal = config.first_subsampling_dl * config.KP_extent * 2.5
+
+    # Starting layer
+    layer_blocks = []
+    layer = 0
+
+    # Lists of inputs
+    input_points = []
+    input_neighbors = []
+    input_pools = []
+    input_batches_len = []
+
+    for block_i, block in enumerate(config.architecture):
+
+        # Stop when meeting a global pooling (not include upsampling)
+        # TODO: this condition is different with tensorflow implementation.
+        if 'global' in block and layer_blocks == []:
+            break
+
+        # Get all blocks of the layer
+        if not ('pool' in block or 'strided' in block):
+            layer_blocks += [block]
+            if block_i < len(config.architecture) - 1 and not ('upsample' in config.architecture[block_i + 1]):
+                continue
+
+        # Convolution neighbors indices
+        # *****************************
+
+        if layer_blocks:
+            # Convolutions are done in this layer, compute the neighbors with the good radius
+            if np.any(['deformable' in blck for blck in layer_blocks[:-1]]):
+                r = r_normal * config.density_parameter / (config.KP_extent * 2.5)
+            else:
+                r = r_normal
+            conv_i = batch_find_neighbors(batched_points_list, batched_points_list, batched_lengths_list, batched_lengths_list, r,
+                                          neighborhood_limits[layer])
+
+        else:
+            # This layer only perform pooling, no neighbors required
+            conv_i = torch.zeros((0, 1), dtype=torch.int32)
+
+        # Pooling neighbors indices
+        # *************************
+
+        # If end of layer is a pooling operation
+        if 'pool' in block or 'strided' in block:
+
+            # New subsampling length
+            dl = 2 * r_normal / (config.KP_extent * 2.5)
+
+            # Subsampled points
+            pool_p, pool_b = batch_grid_subsampling(batched_points_list, batched_lengths_list, sampleDl=dl)
+
+            # Radius of pooled neighbors
+            if 'deformable' in block:
+                r = r_normal * config.density_parameter / (config.KP_extent * 2.5)
+            else:
+                r = r_normal
+
+            # Subsample indices
+            pool_i = batch_find_neighbors(pool_p, batched_points_list, pool_b, batched_lengths_list, r, neighborhood_limits[layer])
+
+
+        else:
+            # No pooling in the end of this layer, no pooling indices required
+            pool_i = torch.zeros((0, 1), dtype=torch.int32)
+            pool_p = torch.zeros((0, 3), dtype=torch.float32)
+            pool_b = torch.zeros((0,), dtype=torch.int32)
+
+        # Updating input lists
+        input_points += [torch.from_numpy(np.concatenate(batched_points_list, axis=0)).float()]
+        input_neighbors += [conv_i]
+        input_pools += [pool_i]
+        input_batches_len += [batched_lengths_list]
+
+        # New points for next layer
+        batched_points_list = pool_p
+        batched_lengths_list = pool_b
+
+        # Update radius and reset blocks
+        r_normal *= 2
+        layer += 1
+        layer_blocks = []
+
+    ###############
+    # Return inputs
+    ###############
+    dict_inputs = {
+        'points': input_points,
+        'neighbors': input_neighbors,
+        'pools': input_pools,
+        'features': torch.from_numpy(input_features).float(),
+        'labels': torch.from_numpy(input_labels),
+        'stack_lengths': torch.from_numpy(np.array(input_batches_len))
+    }
+
+    return dict_inputs
+
+
+def calibrate_neighbors(dataset, config, collate_fn, keep_ratio=0.8, samples_threshold=10000):
+    timer = Timer()
+    last_display = timer.total_time
+
+    # From config parameter, compute higher bound of neighbors number in a neighborhood
+    hist_n = int(np.ceil(4 / 3 * np.pi * (config.density_parameter + 1) ** 3))
+    neighb_hists = np.zeros((config.num_layers, hist_n), dtype=np.int32)
+
+    # Get histogram of neighborhood sizes i in 1 epoch max.
+    for i in range(len(dataset)):
+        timer.tic()
+        batched_input = collate_fn([dataset[i]], config, neighborhood_limits=[hist_n] * 5)
+
+        # update histogram
+        counts = [torch.sum(neighb_mat < neighb_mat.shape[0], dim=1).numpy() for neighb_mat in batched_input['neighbors']]
+        hists = [np.bincount(c, minlength=hist_n)[:hist_n] for c in counts]
+        neighb_hists += np.vstack(hists)
+        timer.toc()
+
+        if timer.total_time - last_display > 0.1:
+            last_display = timer.total_time
+            print(f"Calib Neighbors {i:08d}: timings {timer.total_time:4.2f}s")
+
+        if np.min(np.sum(neighb_hists, axis=1)) > samples_threshold:
+            break
+
+    cumsum = np.cumsum(neighb_hists.T, axis=0)
+    percentiles = np.sum(cumsum < (keep_ratio * cumsum[hist_n - 1, :]), axis=0)
+
+    neighborhood_limits = percentiles
+    print('\n')
+
+    return neighborhood_limits
+
+
+def get_dataloader(dataset, batch_size=2, num_workers=4, shuffle=True):
+    if dataset.classification is False:
+        neighborhood_limits = calibrate_neighbors(dataset, dataset.config, collate_fn=collate_fn_segmentation)
+        print("neighborhood:", neighborhood_limits)
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            # https://discuss.pytorch.org/t/supplying-arguments-to-collate-fn/25754/4
+            collate_fn=partial(collate_fn_segmentation, config=dataset.config, neighborhood_limits=neighborhood_limits),
+            drop_last=True
+        )
+    else:
+        neighborhood_limits = calibrate_neighbors(dataset, dataset.config, collate_fn=collate_fn_classification)
+        print("neighborhood:", neighborhood_limits)
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            collate_fn=partial(collate_fn_classification, config=dataset.config, neighborhood_limits=neighborhood_limits),
+            drop_last=True
+        )
+
+    return dataloader
+
+
+if __name__ == '__main__':
+    # from training_ShapeNetCls import ShapeNetPartConfig
+    from training_ShapeNetPart import ShapeNetPartConfig
+    from datasets.ShapeNet import ShapeNetDataset
+
+    config = ShapeNetPartConfig()
+    datapath = "./data/shapenetcore_partanno_segmentation_benchmark_v0"
+    dset = ShapeNetDataset(root=datapath, config=config, first_subsampling_dl=0.01, classification=False)
+    dataloader = get_dataloader(dset, batch_size=2, num_workers=1)
+    for iter, inputs in enumerate(dataloader):
+        print(iter)
+        print(inputs['labels'])
+        break

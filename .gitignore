@@ -1,0 +1,10 @@
+data/*
+kernels/*.ply
+snapshot/*
+tensorboard/*
+*/__pycache__/*
+__pycache__/*
+*/pyc
+.idea/
+*.o
+*.so
