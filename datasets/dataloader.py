@@ -333,7 +333,7 @@ def collate_fn_classification(list_data, config, neighborhood_limits):
     return dict_inputs
 
 
-def calibrate_neighbors(dataset, config, collate_fn, keep_ratio=0.8, samples_threshold=10000):
+def calibrate_neighbors(dataset, config, collate_fn, keep_ratio=0.8, samples_threshold=5000):
     timer = Timer()
     last_display = timer.total_time
 
