@@ -5,7 +5,7 @@ This repo is implementation for KPConv(https://arxiv.org/abs/1904.08889) in Pyto
 ## TODO
 There are still some works to be done:
 - [ ] Deformable KPConv. Currently I have only implemented the rigid KPConv.
-- [ ] Speed up. For current implementation, the `collate_fn` where the neighbor indices and pooling indices are calculated, is too slow. In the tf version, the author implement 2 tensroflow C++ wrapper which is quite efficient.
+- [ ] Speed up. For current implementation, the `collate_fn` where the neighbor indices and pooling indices are calculated, is too slow. In the tf version, the author implement 2 tensroflow C++ wrapper which is quite efficient. I am planing to write C++ extention using pytorch. 
 - [ ] Maybe other datasets.
 
 
