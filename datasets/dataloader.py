@@ -149,7 +149,7 @@ def collate_fn_segmentation(list_data, config, neighborhood_limits):
 
         else:
             # This layer only perform pooling, no neighbors required
-            conv_i = torch.zeros((0, 1), dtype=torch.int32)
+            conv_i = torch.zeros((0, 1), dtype=torch.int64)
 
         # Pooling neighbors indices
         # *************************
@@ -177,10 +177,10 @@ def collate_fn_segmentation(list_data, config, neighborhood_limits):
 
         else:
             # No pooling in the end of this layer, no pooling indices required
-            pool_i = torch.zeros((0, 1), dtype=torch.int32)
+            pool_i = torch.zeros((0, 1), dtype=torch.int64)
             pool_p = torch.zeros((0, 3), dtype=torch.float32)
-            pool_b = torch.zeros((0,), dtype=torch.int32)
-            up_i = torch.zeros((0, 1), dtype=torch.int32)
+            pool_b = torch.zeros((0,), dtype=torch.int64)
+            up_i = torch.zeros((0, 1), dtype=torch.int64)
 
         # Updating input lists
         input_points += [torch.from_numpy(np.concatenate(batched_points_list, axis=0)).float()]
@@ -273,7 +273,7 @@ def collate_fn_classification(list_data, config, neighborhood_limits):
 
         else:
             # This layer only perform pooling, no neighbors required
-            conv_i = torch.zeros((0, 1), dtype=torch.int32)
+            conv_i = torch.zeros((0, 1), dtype=torch.int64)
 
         # Pooling neighbors indices
         # *************************
@@ -299,9 +299,9 @@ def collate_fn_classification(list_data, config, neighborhood_limits):
 
         else:
             # No pooling in the end of this layer, no pooling indices required
-            pool_i = torch.zeros((0, 1), dtype=torch.int32)
-            pool_p = torch.zeros((0, 3), dtype=torch.float32)
-            pool_b = torch.zeros((0,), dtype=torch.int32)
+            pool_i = torch.zeros((0, 1), dtype=torch.int64)
+            pool_p = torch.zeros((0, 3), dtype=torch.float64)
+            pool_b = torch.zeros((0,), dtype=torch.int64)
 
         # Updating input lists
         input_points += [torch.from_numpy(np.concatenate(batched_points_list, axis=0)).float()]

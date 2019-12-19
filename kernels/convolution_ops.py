@@ -114,7 +114,7 @@ def KPConv_ops(query_points,
     support_points = torch.cat([support_points, shadow_point], dim=0)
 
     # Get neighbor points [n_points, n_neighbors, dim]
-    neighbors = support_points[neighbors_indices.long(), :]
+    neighbors = support_points[neighbors_indices, :]
 
     # Center every neighborhood
     neighbors = neighbors - query_points.unsqueeze(1)
@@ -157,7 +157,7 @@ def KPConv_ops(query_points,
     features = torch.cat([features, torch.zeros_like(features[:1, :])], dim=0)
 
     # Get the features of each neighborhood [n_points, n_neighbors, in_fdim]
-    neighborhood_features = features[neighbors_indices.long(), :]
+    neighborhood_features = features[neighbors_indices, :]
 
     # Apply distance weights [n_points, n_kpoints, in_fdim]
     weighted_features = torch.matmul(all_weights, neighborhood_features)
