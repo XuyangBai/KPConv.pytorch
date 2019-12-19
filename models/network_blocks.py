@@ -12,14 +12,16 @@ from torch.nn import functional as F
 #
 
 def weight_variable(size):
-    # tf.set_random_seed(42)
+    # https://discuss.pytorch.org/t/implementing-truncated-normal-initializer/4778/21
     initial = np.random.normal(scale=np.sqrt(2 / size[-1]), size=size)
+    initial[initial > 2 * np.sqrt(2 / size[-1])] = 0 # truncated
+    initial[initial < -2 * np.sqrt(2 / size[-1])] = 0 # truncated
     weight = nn.Parameter(torch.from_numpy(initial).float(), requires_grad=True)
     return weight
 
 
 def bias_variable(size):
-    initial = torch.zeros(size=size)
+    initial = torch.zeros(size=size, dtype=torch.float32)
     bias = nn.Parameter(initial, requires_grad=True)
     return bias
 

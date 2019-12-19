@@ -47,7 +47,7 @@ def batch_find_neighbors(query_points, support_points, query_batches, support_ba
             neighbors_indices_list.append(idx)
         # finish one query_points, update the start_ind
         start_ind += support_batches[i_batch]
-    return torch.from_numpy(np.array(neighbors_indices_list))
+    return torch.from_numpy(np.array(neighbors_indices_list)).long()
 
 
 def grid_subsampling(points, features=None, labels=None, sampleDl=0.1, verbose=0):
@@ -184,9 +184,9 @@ def collate_fn_segmentation(list_data, config, neighborhood_limits):
 
         # Updating input lists
         input_points += [torch.from_numpy(np.concatenate(batched_points_list, axis=0)).float()]
-        input_neighbors += [conv_i]
-        input_pools += [pool_i]
-        input_upsamples += [up_i]
+        input_neighbors += [conv_i.long()]
+        input_pools += [pool_i.long()]
+        input_upsamples += [up_i.long()]
         input_batches_len += [batched_lengths_list]
 
         # New points for next layer
@@ -305,8 +305,8 @@ def collate_fn_classification(list_data, config, neighborhood_limits):
 
         # Updating input lists
         input_points += [torch.from_numpy(np.concatenate(batched_points_list, axis=0)).float()]
-        input_neighbors += [conv_i]
-        input_pools += [pool_i]
+        input_neighbors += [conv_i.long()]
+        input_pools += [pool_i.long()]
         input_batches_len += [batched_lengths_list]
 
         # New points for next layer
