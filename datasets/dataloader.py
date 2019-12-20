@@ -24,10 +24,11 @@ def find_neighbors(query_points, support_points, radius, max_neighbor):
     return torch.from_numpy(neighbors)
 
 def batch_find_neighbors_wrapper(query_points, support_points, query_batches, support_batches, radius, max_neighbors):
-    if True:
+    if False:
         cpp = batch_find_neighbors_cpp(query_points, support_points, query_batches, support_batches, radius, max_neighbors)
         cpp = cpp.reshape([query_points.shape[0], -1])
         cpp = cpp[:, :max_neighbors]
+        return cpp
     else:
         py = batch_find_neighbors_py(query_points, support_points, query_batches, support_batches, radius, max_neighbors)
         py = py[:, :max_neighbors]
@@ -51,6 +52,7 @@ def batch_find_neighbors_py(query_points, support_points, query_batches, support
     # Search neigbors indices
     neighbors_indices_list = []
     start_ind = 0
+    support_start_ind = 0
     dustbin_ind = len(support_points)
     for i_batch, length in enumerate(query_batches):
         for i_pts, pts in enumerate(query_points[start_ind:start_ind + length]):
@@ -61,11 +63,12 @@ def batch_find_neighbors_py(query_points, support_points, query_batches, support
                 idx = list(idx[0:max_neighbors])
             else:
                 # if not enough neighbor points, then add dustbin index. Careful !!!
-                idx = list(idx) + [dustbin_ind - start_ind] * (max_neighbors - k)
-            idx = np.array(idx) + int(start_ind)
+                idx = list(idx) + [dustbin_ind - support_start_ind] * (max_neighbors - k)
+            idx = np.array(idx) + support_start_ind
             neighbors_indices_list.append(idx)
         # finish one query_points, update the start_ind
-        start_ind += length
+        start_ind += int(query_batches[i_batch])
+        support_start_ind += int(support_batches[i_batch])
     return torch.from_numpy(np.array(neighbors_indices_list)).long()
 
 def grid_subsampling(points, features=None, labels=None, sampleDl=0.1, verbose=0):
@@ -103,6 +106,7 @@ def batch_grid_subsampling(points, batches_len, sampleDl=0.1):
     for length in batches_len:
         b_origin_points = points[start_ind:start_ind + length]
         b_subsampled_points = grid_subsampling(b_origin_points, sampleDl=sampleDl)
+        start_ind += length
         subsampled_points_list.append(b_subsampled_points)
         subsampled_batches_len_list.append(len(b_subsampled_points))
     subsampled_points = torch.from_numpy(np.concatenate(subsampled_points_list, axis=0))

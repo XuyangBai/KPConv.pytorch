@@ -90,7 +90,7 @@ class KPCNN(nn.Module):
                 stack_lengths = inputs['stack_lengths']
                 features = block_ops(stack_lengths, features)
             else:
-                if block in ['unary', 'simple', 'resnet', 'resnetb']:
+                if block in ['unary', 'simple', 'resnet', 'resnetb', 'resnetb_deformable']:
                     query_points = inputs['points'][layer]
                     support_points = inputs['points'][layer]
                     neighbors_indices = inputs['neighbors'][layer]
@@ -132,7 +132,7 @@ if __name__ == '__main__':
     config = ShapeNetPartConfig()
     datapath = "./data/shapenetcore_partanno_segmentation_benchmark_v0"
     dset = ShapeNetDataset(root=datapath, config=config, first_subsampling_dl=0.01, classification=True)
-    dataloader = get_dataloader(dset, batch_size=1)
+    dataloader = get_dataloader(dset, batch_size=4)
     model = KPCNN(config)
 
     for iter, input in enumerate(dataloader):

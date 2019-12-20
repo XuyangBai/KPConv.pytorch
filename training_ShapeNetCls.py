@@ -45,6 +45,7 @@ class ShapeNetPartConfig(Config):
     KP_influence = 'linear'
     KP_extent = 1.0
     convolution_mode = 'sum'
+    modulated = False
 
     # training
     max_epoch = 200

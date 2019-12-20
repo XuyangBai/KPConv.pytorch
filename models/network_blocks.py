@@ -14,8 +14,8 @@ from torch.nn import functional as F
 def weight_variable(size):
     # https://discuss.pytorch.org/t/implementing-truncated-normal-initializer/4778/21
     initial = np.random.normal(scale=np.sqrt(2 / size[-1]), size=size)
-    initial[initial > 2 * np.sqrt(2 / size[-1])] = 0 # truncated
-    initial[initial < -2 * np.sqrt(2 / size[-1])] = 0 # truncated
+    initial[initial > 2 * np.sqrt(2 / size[-1])] = 0  # truncated
+    initial[initial < -2 * np.sqrt(2 / size[-1])] = 0  # truncated
     weight = nn.Parameter(torch.from_numpy(initial).float(), requires_grad=True)
     return weight
 
@@ -113,7 +113,7 @@ class unary_block(nn.Module):
 
 
 class simple_block(nn.Module):
-    def __init__(self, config, in_fdim, out_fdim, radius, strided):
+    def __init__(self, config, in_fdim, out_fdim, radius, strided=False):
         super(simple_block, self).__init__()
         self.config = config
         self.radius = radius
@@ -152,6 +152,77 @@ class simple_block(nn.Module):
 
     def __repr__(self):
         return f'simple(in_fdim={self.in_fdim}, out_fdim={self.out_fdim})'
+
+
+class simple_deformable_block(nn.Module):
+    def __init__(self, config, in_fdim, out_fdim, radius, strided=False):
+        super(simple_deformable_block, self).__init__()
+        self.config = config
+        self.radius = radius
+        self.strided = strided
+        self.in_fdim, self.out_fdim = in_fdim, out_fdim
+        self.deformable_v2 = True
+
+        # kernel points weight
+        self.weight = weight_variable([config.num_kernel_points, in_fdim, out_fdim])
+        if config.use_batch_norm:
+            self.bn = nn.BatchNorm1d(out_fdim, momentum=config.momentum, eps=1e-6)
+        self.relu = leaky_relu_layer()
+
+        if self.config.modulated:
+            offset_dim = (3 + 1) * config.num_kernel_points
+        else:
+            offset_dim = 3 * config.num_kernel_points
+        if self.deformable_v2:
+            self.offset_weight = weight_variable([in_fdim, offset_dim])
+            self.offset_bias = bias_variable([offset_dim])
+        else:
+            self.offset_weight = weight_variable([config.num_kernel_points, in_fdim, offset_dim])
+            self.offset_bias = bias_variable([offset_dim])
+
+    def forward(self, query_points, support_points, neighbors_indices, features):
+        """
+        This module performs a Kernel Point Convolution. (both normal and strided version)
+        :param query_points: float32[n_points, dim] - input query points (center of neighborhoods)
+        :param support_points: float32[n0_points, dim] - input support points (from which neighbors are taken)
+        :param neighbors_indices: int32[n_points, n_neighbors] - indices of neighbors of each point
+        :param features: float32[n_points, in_fdim] - input features
+        :return: output_features float32[n_points, out_fdim]
+        """
+        if self.deformable_v2:
+            x = conv_ops.KPConv_deformable_v2(query_points,
+                                              support_points,
+                                              neighbors_indices,
+                                              features,
+                                              K_values=self.weight,
+                                              w0=self.offset_weight,
+                                              b0=self.offset_bias,
+                                              fixed=self.config.fixed_kernel_points,
+                                              KP_extent=self.config.KP_extent * self.radius / self.config.density_parameter,
+                                              KP_influence=self.config.KP_influence,
+                                              aggregation_mode=self.config.convolution_mode,
+                                              modulated=self.config.modulated)
+        else:
+            x = conv_ops.KPConv_deformable(query_points,
+                                           support_points,
+                                           neighbors_indices,
+                                           features,
+                                           K_values=self.weight,
+                                           w0=self.offset_weight,
+                                           b0=self.offset_bias,
+                                           fixed=self.config.fixed_kernel_points,
+                                           KP_extent=self.config.KP_extent * self.radius / self.config.density_parameter,
+                                           KP_influence=self.config.KP_influence,
+                                           aggregation_mode=self.config.convolution_mode,
+                                           modulated=self.config.modulated)
+        if self.config.use_batch_norm:
+            x = self.relu(self.bn(x))
+        else:
+            x = self.relu(x)
+        return x
+
+    def __repr__(self):
+        return f'simple_deformable(in_fdim={self.in_fdim}, out_fdim={self.out_fdim})'
 
 
 class resnet_block(nn.Module):
@@ -198,6 +269,43 @@ class resnetb_block(nn.Module):
         """
         This module performs a resnet bottleneck convolution (1conv > KPconv > 1conv + shortcut)
         Both resnetb and resnetb_strided use the module.
+        :param query_points: float32[n_points, dim] - input query points (center of neighborhoods)
+        :param support_points: float32[n0_points, dim] - input support points (from which neighbors are taken)
+        :param neighbors_indices: int32[n_points, n_neighbors] - indices of neighbors of each point
+        :param features: float32[n_points, in_fdim] - input features
+        :return: output_features float32[n_points, out_fdim]
+        """
+        origin_features = features  # save for shortcut
+        features = self.conv1(query_points, support_points, neighbors_indices, features)
+        features = self.conv2(query_points, support_points, neighbors_indices, features)
+        features = self.conv3(query_points, support_points, neighbors_indices, features)
+        # TODO: origin implementation has two kinds of shortcut.
+        if self.strided is False:  # for resnetb
+            shortcut = self.shortcut(query_points, support_points, neighbors_indices, origin_features)
+        else:  # for resnetb_strided
+            pool_features = ind_max_pool(origin_features, neighbors_indices)
+            shortcut = self.shortcut(query_points, support_points, neighbors_indices, pool_features)
+        return self.relu(shortcut + features)
+
+
+class resnetb_deformable_block(nn.Module):
+    def __init__(self, config, in_fdim, out_fdim, radius, strided):
+        super(resnetb_deformable_block, self).__init__()
+        self.config = config
+        self.radius = radius
+        self.strided = strided
+        self.in_fdim, self.out_fdim = in_fdim, out_fdim
+        self.conv1 = unary_block(config, in_fdim, out_fdim // 2)
+        self.conv2 = simple_deformable_block(config, out_fdim // 2, out_fdim // 2, radius, strided=strided)
+        # TODO: origin implementation this last conv change feature dim to out_fdim * 2
+        self.conv3 = unary_block(config, out_fdim // 2, out_fdim)
+        self.shortcut = unary_block(config, in_fdim, out_fdim)
+        self.relu = leaky_relu_layer()
+
+    def forward(self, query_points, support_points, neighbors_indices, features):
+        """
+        This module performs a resnet deformable bottleneck convolution (1conv > KPconv > 1conv + shortcut)
+        Both resnetb_deformable and resnetb_deformable_strided use the module.
         :param query_points: float32[n_points, dim] - input query points (center of neighborhoods)
         :param support_points: float32[n0_points, dim] - input support points (from which neighbors are taken)
         :param neighbors_indices: int32[n_points, n_neighbors] - indices of neighbors of each point
@@ -266,3 +374,5 @@ def get_block(block_name, config, in_fdim, out_fdim, radius, strided):
         return resnet_block(config, in_fdim, out_fdim, radius=radius)
     if block_name == 'resnetb' or block_name == 'resnetb_strided':
         return resnetb_block(config, in_fdim, out_fdim, radius=radius, strided=strided)
+    if block_name == 'resnetb_deformable' or block_name == 'resnetb_deformable_strided':
+        return resnetb_deformable_block(config, in_fdim, out_fdim, radius=radius, strided=strided)
