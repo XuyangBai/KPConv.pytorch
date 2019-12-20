@@ -23,39 +23,45 @@ def find_neighbors(query_points, support_points, radius, max_neighbor):
     neighbors = np.concatenate(neighbor_indices_list, axis=0)
     return torch.from_numpy(neighbors)
 
-def batch_find_neighbors_cpp(query_points, support_points, query_batches, support_batches, radius, max_neighbors=None):
-    outputs = batch_find_neighbors.compute(query_points, support_points, query_batches, support_batches, radius)
-    if max_neighbors is None:
-        return outputs
+def batch_find_neighbors_wrapper(query_points, support_points, query_batches, support_batches, radius, max_neighbors):
+    if True:
+        neighbors = batch_find_neighbors_py(query_points, support_points, query_batches, support_batches, radius, max_neighbors)
     else:
-        return outputs[:, :max_neighbors]
+        neighbors = batch_find_neighbors_cpp(query_points, support_points, query_batches, support_batches, radius, max_neighbors)
+        neighbors = neighbors.reshape([query_points.shape[0], -1])
+    return neighbors[:, :max_neighbors] 
+
+def batch_find_neighbors_cpp(query_points, support_points, query_batches, support_batches, radius, max_neighbors):
+    outputs = batch_find_neighbors.compute(query_points, support_points, query_batches, support_batches, radius)
+    outputs = outputs.long()
+    return outputs
 
 def batch_find_neighbors_py(query_points, support_points, query_batches, support_batches, radius, max_neighbors):
-    num_batches = len(query_batches)
+    num_batches = len(support_batches)
     # Create kdtree for each pcd
     kdtrees = []
-    for i in range(num_batches):
-        pcd = make_point_cloud(support_points[i])
+    start_ind = 0
+    for length in support_batches:
+        pcd = make_point_cloud(support_points[start_ind:start_ind + length])
         kdtrees.append(open3d.KDTreeFlann(pcd))
     assert len(kdtrees) == num_batches
     # Search neigbors indices
     neighbors_indices_list = []
     start_ind = 0
-    dustbin_ind = np.sum(support_batches)
-    for i_batch in range(num_batches):
-        for i_pts, pts in enumerate(query_points[i_batch]):
+    dustbin_ind = len(support_points)
+    for i_batch, length in enumerate(query_batches):
+        for i_pts, pts in enumerate(query_points[start_ind:start_ind + length]):
             [k, idx, dis] = kdtrees[i_batch].search_radius_vector_3d(pts, radius)
             if k > max_neighbors:
                 idx = np.random.choice(idx, max_neighbors, replace=False)
             else:
                 # if not enough neighbor points, then add dustbin index. Careful !!!
                 idx = list(idx) + [dustbin_ind - start_ind] * (max_neighbors - k)
-            idx = np.array(idx) + start_ind
+            idx = np.array(idx) + int(start_ind)
             neighbors_indices_list.append(idx)
         # finish one query_points, update the start_ind
-        start_ind += support_batches[i_batch]
+        start_ind += length
     return torch.from_numpy(np.array(neighbors_indices_list)).long()
-
 
 def grid_subsampling(points, features=None, labels=None, sampleDl=0.1, verbose=0):
     """
@@ -151,7 +157,7 @@ def collate_fn_segmentation(list_data, config, neighborhood_limits):
                 r = r_normal * config.density_parameter / (config.KP_extent * 2.5)
             else:
                 r = r_normal
-            conv_i = batch_find_neighbors_cpp(batched_points, batched_points, batched_lengths, batched_lengths, r, neighborhood_limits[layer])
+            conv_i = batch_find_neighbors_wrapper(batched_points, batched_points, batched_lengths, batched_lengths, r, neighborhood_limits[layer])
 
         else:
             # This layer only perform pooling, no neighbors required
@@ -176,10 +182,10 @@ def collate_fn_segmentation(list_data, config, neighborhood_limits):
                 r = r_normal
 
             # Subsample indices
-            pool_i = batch_find_neighbors_cpp(pool_p, batched_points, pool_b, batched_lengths, r, neighborhood_limits[layer])
+            pool_i = batch_find_neighbors_wrapper(pool_p, batched_points, pool_b, batched_lengths, r, neighborhood_limits[layer])
 
             # Upsample indices (with the radius of the next layer to keep wanted density)
-            up_i = batch_find_neighbors_cpp(batched_points, pool_p, batched_lengths, pool_b, 2 * r, neighborhood_limits[layer])
+            up_i = batch_find_neighbors_wrapper(batched_points, pool_p, batched_lengths, pool_b, 2 * r, neighborhood_limits[layer])
 
         else:
             # No pooling in the end of this layer, no pooling indices required
@@ -273,7 +279,7 @@ def collate_fn_classification(list_data, config, neighborhood_limits):
                 r = r_normal * config.density_parameter / (config.KP_extent * 2.5)
             else:
                 r = r_normal
-            conv_i = batch_find_neighbors_cpp(batched_points, batched_points, batched_lengths, batched_lengths, r, neighborhood_limits[layer])
+            conv_i = batch_find_neighbors_wrapper(batched_points, batched_points, batched_lengths, batched_lengths, r, neighborhood_limits[layer])
 
         else:
             # This layer only perform pooling, no neighbors required
@@ -298,7 +304,7 @@ def collate_fn_classification(list_data, config, neighborhood_limits):
                 r = r_normal
 
             # Subsample indices
-            pool_i = batch_find_neighbors_cpp(pool_p, batched_points, pool_b, batched_lengths, r, neighborhood_limits[layer])
+            pool_i = batch_find_neighbors_wrapper(pool_p, batched_points, pool_b, batched_lengths, r, neighborhood_limits[layer])
 
 
         else:

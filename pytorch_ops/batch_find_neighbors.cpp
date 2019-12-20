@@ -43,11 +43,15 @@ torch::Tensor batch_find_neighbors(
     auto output_tensor = torch::zeros({Nq, max_neighbors});
 
     // Fill output tensor
+    // output_tensor = torch::from_blob(&neighbors_indices);
+    // https://discuss.pytorch.org/t/can-i-initialize-tensor-from-std-vector-in-libtorch/33236
+    output_tensor = torch::tensor(neighbors_indices);
     // for (int i = 0; i < Nq; i++)
     // {
     //     for (int j = 0; j < max_neighbors; j++)
-    //     {
-    //         output_tensor(i, j) = neighbors_indices[max_neighbors * i + j];
+    //     { 
+    //         // std::cout << neighbors_indices[max_neighbors * i + j] << std::endl;
+    //         output_tensor[i][j] = neighbors_indices[max_neighbors * i + j];
     //     }
     // }
 
