@@ -26,8 +26,8 @@ torch::Tensor batch_find_neighbors(
         // Batches lengths
     vector<int> q_batches = vector<int>((int*)query_batches.data<int>(),
                                         (int*)query_batches.data<int>() + Nb);
-    vector<int> s_batches = vector<int>((int*)query_batches.data<int>(),
-                                        (int*)query_batches.data<int>() + Nb);
+    vector<int> s_batches = vector<int>((int*)support_batches.data<int>(),
+                                        (int*)support_batches.data<int>() + Nb);
 
     // Create result containers
     vector<int> neighbors_indices;

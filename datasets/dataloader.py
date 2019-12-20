@@ -25,11 +25,13 @@ def find_neighbors(query_points, support_points, radius, max_neighbor):
 
 def batch_find_neighbors_wrapper(query_points, support_points, query_batches, support_batches, radius, max_neighbors):
     if True:
-        neighbors = batch_find_neighbors_py(query_points, support_points, query_batches, support_batches, radius, max_neighbors)
+        cpp = batch_find_neighbors_cpp(query_points, support_points, query_batches, support_batches, radius, max_neighbors)
+        cpp = cpp.reshape([query_points.shape[0], -1])
+        cpp = cpp[:, :max_neighbors]
     else:
-        neighbors = batch_find_neighbors_cpp(query_points, support_points, query_batches, support_batches, radius, max_neighbors)
-        neighbors = neighbors.reshape([query_points.shape[0], -1])
-    return neighbors[:, :max_neighbors] 
+        py = batch_find_neighbors_py(query_points, support_points, query_batches, support_batches, radius, max_neighbors)
+        py = py[:, :max_neighbors]
+        return py
 
 def batch_find_neighbors_cpp(query_points, support_points, query_batches, support_batches, radius, max_neighbors):
     outputs = batch_find_neighbors.compute(query_points, support_points, query_batches, support_batches, radius)
@@ -38,12 +40,13 @@ def batch_find_neighbors_cpp(query_points, support_points, query_batches, suppor
 
 def batch_find_neighbors_py(query_points, support_points, query_batches, support_batches, radius, max_neighbors):
     num_batches = len(support_batches)
-    # Create kdtree for each pcd
+    # Create kdtree for each pcd in support_points
     kdtrees = []
     start_ind = 0
     for length in support_batches:
         pcd = make_point_cloud(support_points[start_ind:start_ind + length])
         kdtrees.append(open3d.KDTreeFlann(pcd))
+        start_ind += length
     assert len(kdtrees) == num_batches
     # Search neigbors indices
     neighbors_indices_list = []
@@ -53,7 +56,9 @@ def batch_find_neighbors_py(query_points, support_points, query_batches, support
         for i_pts, pts in enumerate(query_points[start_ind:start_ind + length]):
             [k, idx, dis] = kdtrees[i_batch].search_radius_vector_3d(pts, radius)
             if k > max_neighbors:
-                idx = np.random.choice(idx, max_neighbors, replace=False)
+                # idx = np.random.choice(idx, max_neighbors, replace=False)
+                # If i use random, the closest_pool will not work as expected.
+                idx = list(idx[0:max_neighbors])
             else:
                 # if not enough neighbor points, then add dustbin index. Careful !!!
                 idx = list(idx) + [dustbin_ind - start_ind] * (max_neighbors - k)

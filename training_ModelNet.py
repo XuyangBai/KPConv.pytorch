@@ -48,7 +48,7 @@ class ModelNetConfig(Config):
 
     # training
     max_epoch = 200
-    learning_rate = 1e-2
+    learning_rate = 5e-3
     momentum = 0.98
     exp_gamma = 0.1 ** (1 / 80)
     exp_interval = 1
