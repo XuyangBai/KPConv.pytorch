@@ -1,12 +1,13 @@
 ## KPConv.pytorch
 
-This repo is implementation for KPConv(https://arxiv.org/abs/1904.08889) in Pytorch.
+This repo is implementation for KPConv(https://arxiv.org/abs/1904.08889) in pytorch.
 
 ## TODO
 There are still some works to be done:
-- [ ] Deformable KPConv. Currently I have only implemented the rigid KPConv.
+- [x] Deformable KPConv. Currently I have only implemented the rigid KPConv.
+  - [ ] Regularization loss for the deformable convolution needs to be implemented. I have tried using the deformable convolution layer in part segmention on shapenet without the regularization term, the performance is similar with the rigid convolution counterparts.
 - [x] Speed up. For current implementation, the `collate_fn` where the neighbor indices and pooling indices are calculated, is too slow. In the tf version, the author implement 2 tensroflow C++ wrapper which is quite efficient. I am planing to write C++ extention using pytorch. 
-  - [ ] But after I implemented the C++ extention, the evaluation time reduces significantly while the model forward and backward pass still cost about 1.1s per iteration.
+  - [ ] But after I implemented the C++ extention, the evaluation time reduces significantly while the model forward and backward pass still cost about 0.8s per iteration.
 - [ ] Maybe other datasets.
 
 
