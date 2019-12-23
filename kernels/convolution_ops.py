@@ -357,20 +357,28 @@ def KPConv_deformable_v2(query_points,
 
     # Get features from mlp
     features0 = unary_convolution(features, w0) + b0
+    # TODO: need to do something to reduce the point size from len(support_points) to len(query_points).
 
     if modulated:
 
         # Get offset (in normalized scale) from features
-        offsets = features0[:, :points_dim * num_kpoints]
-        offsets = offsets.reshape([-1, num_kpoints, points_dim])
+        offsets = features0[:, :points_dim * (num_kpoints - 1)]
+        offsets = offsets.reshape([-1, (num_kpoints - 1), points_dim])
 
         # Get modulations
-        modulations = 2 * torch.sigmoid(features0[:, points_dim * num_kpoints:])
+        modulations = 2 * torch.sigmoid(features0[:, points_dim * (num_kpoints-1):])
+
+        # No offset for the first Kernel points
+        offsets = torch.cat([torch.zeros_like(offsets[:, :1, :]), offsets], dim=1)
+        modulations = torch.cat([torch.zeros_like(modulations[:, :1]), modulations], dim=1)
 
     else:
 
         # Get offset (in normalized scale) from features
-        offsets = features0.reshape([-1, num_kpoints, points_dim])
+        offsets = features0.reshape([-1, (num_kpoints-1), points_dim])
+
+        # No offset for the first kernle points
+        offsets = torch.cat([torch.zeros_like(offsets[:, :1, :]), offsets], dim=1)
 
         # No modulations
         modulations = None
@@ -457,16 +465,20 @@ def KPConv_deform_ops(query_points,
 
     # For each row of neighbors, indices of the ones that are in range [n_points, new_max_neighb]
     new_neighb_bool, new_neighb_inds = in_range.topk(k=int(new_max_neighb))
-
+    
     # Gather new neighbor indices [n_points, new_max_neighb]
-    new_neighbors_indices = neighbors_indices[:, new_neighb_inds]
+    # new_neighbors_indices = tf.batch_gather(neighbors_indices, new_neigh_inds)
+    new_neighbors_indices = torch.gather(neighbors_indices, dim=1, index=new_neighb_inds)
 
     # Gather new distances to KP [n_points, new_max_neighb, n_kpoints]
-    new_sq_distances = sq_distances[:, :, new_neighb_inds]
+    # new_sq_distances = tf.batch_gather(sq_distances, new_neighb_inds)
+    # https://pytorch.org/docs/stable/torch.html#torch.gather
+    # https://discuss.pytorch.org/t/question-about-torch-gather-with-3-dimensions/19891/2
+    new_sq_distances = sq_distances.gather(dim=1, index=new_neighb_inds.unsqueeze(-1).repeat(1,1,sq_distances.shape[-1])) 
 
     # New shadow neighbors have to point to the last shadow point
-    new_neighbors_indices *= new_neighb_bool
-    new_neighbors_indices += (1 - new_neighb_bool) * shadow_ind
+    new_neighbors_indices *= new_neighb_bool.long()
+    new_neighbors_indices += (1 - new_neighb_bool.long()) * shadow_ind
 
     # Get Kernel point influences [n_points, n_kpoints, n_neighbors]
     if KP_influence == 'constant':
@@ -476,8 +488,8 @@ def KPConv_deform_ops(query_points,
 
     elif KP_influence == 'linear':
         # Influence decrease linearly with the distance, and get to zero when d = KP_extent.
-        corr = 1 - torch.sqrt(sq_distances + 1e-10) / KP_extent
-        all_weights = torch.max(corr, torch.zeros_like(sq_distances))
+        corr = 1 - torch.sqrt(new_sq_distances + 1e-10) / KP_extent
+        all_weights = torch.max(corr, torch.zeros_like(new_sq_distances))
         all_weights = all_weights.transpose(1, 2)
 
     elif KP_influence == 'gaussian':

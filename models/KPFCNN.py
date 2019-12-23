@@ -90,7 +90,7 @@ class KPFCNN(nn.Module):
                     query_points = inputs['points'][layer]
                     support_points = inputs['points'][layer]
                     neighbors_indices = inputs['neighbors'][layer]
-                elif block in ['simple_strided', 'resnetb_strided']:
+                elif block in ['simple_strided', 'resnetb_strided', 'resnetb_deformable_strided']:
                     query_points = inputs['points'][layer + 1]
                     support_points = inputs['points'][layer]
                     neighbors_indices = inputs['pools'][layer]

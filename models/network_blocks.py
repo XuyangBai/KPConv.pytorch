@@ -161,7 +161,7 @@ class simple_deformable_block(nn.Module):
         self.radius = radius
         self.strided = strided
         self.in_fdim, self.out_fdim = in_fdim, out_fdim
-        self.deformable_v2 = True
+        self.deformable_v2 = False
 
         # kernel points weight
         self.weight = weight_variable([config.num_kernel_points, in_fdim, out_fdim])
@@ -169,14 +169,14 @@ class simple_deformable_block(nn.Module):
             self.bn = nn.BatchNorm1d(out_fdim, momentum=config.momentum, eps=1e-6)
         self.relu = leaky_relu_layer()
 
-        if self.config.modulated:
-            offset_dim = (3 + 1) * config.num_kernel_points
-        else:
-            offset_dim = 3 * config.num_kernel_points
+        point_dim = 4 if self.config.modulated else 3
         if self.deformable_v2:
+            # for deformable_v2, there is no offset for the first kernel point.
+            offset_dim = point_dim * (config.num_kernel_points - 1)
             self.offset_weight = weight_variable([in_fdim, offset_dim])
             self.offset_bias = bias_variable([offset_dim])
         else:
+            offset_dim = point_dim * config.num_kernel_points
             self.offset_weight = weight_variable([config.num_kernel_points, in_fdim, offset_dim])
             self.offset_bias = bias_variable([offset_dim])
 

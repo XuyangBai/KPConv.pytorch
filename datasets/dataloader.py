@@ -24,7 +24,7 @@ def find_neighbors(query_points, support_points, radius, max_neighbor):
     return torch.from_numpy(neighbors)
 
 def batch_find_neighbors_wrapper(query_points, support_points, query_batches, support_batches, radius, max_neighbors):
-    if False:
+    if True:
         cpp = batch_find_neighbors_cpp(query_points, support_points, query_batches, support_batches, radius, max_neighbors)
         cpp = cpp.reshape([query_points.shape[0], -1])
         cpp = cpp[:, :max_neighbors]
