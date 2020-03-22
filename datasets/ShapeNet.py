@@ -2,6 +2,8 @@ import os
 import os.path
 import numpy as np
 import json
+import open3d
+from utils.pointcloud import make_point_cloud
 from datasets.common import grid_subsampling
 import torch.utils.data as data
 
@@ -83,11 +85,18 @@ class ShapeNetDataset(data.Dataset):
             point_set[:, [0, 2]] = point_set[:, [0, 2]].dot(rotation_matrix)  # random rotation
             point_set += np.random.normal(0, 0.001, size=point_set.shape)  # random jitter
 
+        pcd = make_point_cloud(point_set)
+        open3d.estimate_normals(pcd)
+        normals = np.array(pcd.normals)
+
         if self.config.in_features_dim == 1:
             features = np.ones([point_set.shape[0], 1])
         elif self.config.in_features_dim == 4:
             features = np.ones([point_set.shape[0], 1])
             features = np.concatenate([features, point_set], axis=1)
+        elif self.config.in_features_dim == 7:
+            features = np.ones([point_set.shape[0], 1])
+            features = np.concatenate([features, point_set, normals], axis=1)
 
         if self.classification:
             # manually convert numpy array to Tensor.
