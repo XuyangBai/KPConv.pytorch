@@ -143,7 +143,7 @@ class Trainer(object):
         data_timer, model_timer = Timer(), Timer()
         loss_meter, acc_meter, iou_meter = AverageMeter(), AverageMeter(), AverageMeter()
         num_iter = int(len(self.test_loader.dataset) // self.train_loader.batch_size)
-        test_loader_iter = self.train_loader.__iter__()
+        test_loader_iter = self.test_loader.__iter__()
         for iter in range(num_iter):
             data_timer.tic()
             inputs = test_loader_iter.next()
